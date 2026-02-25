@@ -5,12 +5,8 @@ from typing import Type
 
 import pytest
 
-from bpe import BaseTokenizer, NaiveTokenizer, OptimizedTokenizer
-
-TOKENIZER_REGISTRY: dict[str, Type[BaseTokenizer]] = {
-    "naive": NaiveTokenizer,
-    "optimized": OptimizedTokenizer,
-}
+from bpe import BaseTokenizer
+from bpe.tokenizer_factory import TOKENIZER_REGISTRY, create_tokenizer
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -83,10 +79,13 @@ def trained_tokenizer(
     request: pytest.FixtureRequest,
 ) -> BaseTokenizer:
     vocab_size = request.config.getoption("--vocab-size")
-    tokenizer = tokenizer_cls(
+    implementation = (
+        "naive" if tokenizer_cls is TOKENIZER_REGISTRY["naive"] else "optimized"
+    )
+    tokenizer = create_tokenizer(
+        implementation=implementation,
         file_path=corpus_file,
         vocab_size=vocab_size,
-        special_tokens={"<|endoftext|>": 50256},
     )
     try:
         tokenizer.train()

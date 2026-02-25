@@ -13,9 +13,11 @@ Minimal Python project for implementing and optimizing a Byte-Pair Encoding (BPE
 - `bpe/base_tokenizer.py`: abstract interface + shared types, constants, and helper functions.
 - `bpe/naive_tokenizer.py`: baseline BPE implementation.
 - `bpe/optimized_tokenizer.py`: optimized implementation skeleton.
+- `bpe/tokenizer_factory.py`: shared tokenizer registry + constructor helper.
 - `bpe/__init__.py`: public exports.
 - `tests/test_tokenizer.py`: tokenizer tests.
 - `conftest.py`: pytest CLI options and fixtures.
+- `benchmarks/benchmark_train.py`: training-time benchmark CLI.
 - `data/`: corpus files for training experiments.
 
 ## Setup
@@ -89,4 +91,25 @@ Run specific tests:
 ```bash
 pytest -q -k identity
 pytest -q -k special --tokenizer naive
+```
+
+## Benchmark training time
+
+Benchmark `train()` for a chosen implementation:
+
+```bash
+python benchmarks/benchmark_train.py \
+  --tokenizer naive \
+  --corpus-path data/corpus.en \
+  --vocab-size 1000 \
+  --runs 3
+```
+
+Switch implementation:
+
+```bash
+python benchmarks/benchmark_train.py \
+  --tokenizer optimized \
+  --corpus-path data/corpus.en \
+  --vocab-size 1000
 ```
