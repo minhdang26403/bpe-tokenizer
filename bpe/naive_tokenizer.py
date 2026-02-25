@@ -4,13 +4,10 @@ from functools import lru_cache
 from pathlib import Path
 
 from .base_tokenizer import (
-    BYTE_VOCAB_SIZE,
     ENCODE_WORD_CACHE_SIZE,
     GPT2_REGEX,
-    UTF8_ENCODING,
     BaseTokenizer,
     TokenId,
-    TokenPair,
     WordCountDict,
     apply_merge,
     get_pair_counts,
@@ -34,14 +31,9 @@ class NaiveTokenizer(BaseTokenizer):
             special_tokens=special_tokens,
         )
 
-        self.merge_rules: dict[TokenPair, TokenId] = {}  # used in encode
-        self.vocab = {id: bytes([id]) for id in range(BYTE_VOCAB_SIZE)}  # decode map
-
-        assert vocab_size >= len(self.vocab)
-
     def load_corpus(self) -> str:
         """Read and return training corpus text from disk."""
-        with open(self.file_path, "r", encoding=UTF8_ENCODING) as f:
+        with open(self.file_path, "r", encoding="utf-8") as f:
             return f.read()
 
     def train(self) -> None:
@@ -58,7 +50,7 @@ class NaiveTokenizer(BaseTokenizer):
 
             words: list[str] = GPT2_REGEX.findall(chunk)
             for word in words:
-                word_ids = tuple(word.encode(UTF8_ENCODING))
+                word_ids = tuple(word.encode(encoding="utf-8"))
                 word_counts[word_ids] = word_counts.get(word_ids, 0) + 1
 
         num_merges = self.vocab_size - len(self.vocab)
@@ -109,7 +101,7 @@ class NaiveTokenizer(BaseTokenizer):
         ids = []
         words: list[str] = GPT2_REGEX.findall(chunk)
         for word in words:
-            word_bytes = word.encode(UTF8_ENCODING)
+            word_bytes = word.encode(encoding="utf-8")
             word_ids = self._encode_word(word_bytes)
             ids.extend(word_ids)
 
@@ -142,7 +134,7 @@ class NaiveTokenizer(BaseTokenizer):
             else:
                 raise ValueError(f"invalid token id: {id}")
         text_bytes = b"".join(chunk_bytes)
-        text = text_bytes.decode(encoding=UTF8_ENCODING, errors="replace")
+        text = text_bytes.decode(encoding="utf-8", errors="replace")
         return text
 
     def save(self, path: str | Path) -> None:

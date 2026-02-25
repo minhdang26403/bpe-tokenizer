@@ -45,23 +45,6 @@ ids = tokenizer.encode("hello <|endoftext|> world")
 text = tokenizer.decode(ids)
 ```
 
-### Notes
-
-- `special_tokens` is `dict[str, int] | None`, not a tuple/list.
-- `train()` uses the configured `vocab_size` from the constructor.
-- `encode()` / `decode()` expect the tokenizer to be trained first.
-
-## Shared helpers and constants
-
-From `bpe/base_tokenizer.py`:
-
-- `TokenId`, `TokenPair`, `WordCountDict`
-- `BYTE_VOCAB_SIZE`, `UTF8_ENCODING`, `ENCODE_WORD_CACHE_SIZE`
-- `GPT2_REGEX`
-- `apply_merge(...)`, `get_pair_counts(...)`, `split_by_special_tokens(...)`
-
-These are intended for reuse by both naive and optimized implementations.
-
 ## Tests
 
 Run all tests:

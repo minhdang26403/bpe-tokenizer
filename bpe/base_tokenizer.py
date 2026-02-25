@@ -8,8 +8,7 @@ import regex  # type: ignore[import-untyped]
 TokenId = int
 TokenPair = tuple[TokenId, TokenId]
 WordCountDict = dict[tuple[TokenId, ...], int]
-BYTE_VOCAB_SIZE = 256
-UTF8_ENCODING = "utf-8"
+BASE_VOCAB_SIZE = 256
 ENCODE_WORD_CACHE_SIZE = 32768
 
 GPT2_REGEX = regex.compile(
@@ -70,13 +69,17 @@ class BaseTokenizer(ABC):
         """Store shared config and derived structures for special tokens."""
         self.file_path = Path(file_path)
         self.vocab_size = vocab_size
+        assert vocab_size >= BASE_VOCAB_SIZE
+
+        self.merge_rules: dict[TokenPair, TokenId] = {}  # used in encode
+        self.vocab = {id: bytes([id]) for id in range(BASE_VOCAB_SIZE)}  # decode map
 
         self.special_tokens = special_tokens if special_tokens else {}
         self.inverse_special_tokens: dict[TokenId, bytes] = {}
         for token, id in self.special_tokens.items():
             assert id >= self.vocab_size
             assert id not in self.inverse_special_tokens
-            self.inverse_special_tokens[id] = token.encode("utf-8")
+            self.inverse_special_tokens[id] = token.encode(encoding="utf-8")
 
         self.is_trained = False
 
