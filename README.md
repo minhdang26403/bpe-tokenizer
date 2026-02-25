@@ -1,15 +1,22 @@
-# BPE Tokenizer (Educational)
+# BPE Tokenizer
 
 Minimal Python project for implementing and optimizing a Byte-Pair Encoding (BPE) tokenizer.
 
+## Current status
+
+- `NaiveTokenizer` has a working baseline implementation for `train`, `encode`, and `decode`.
+- `OptimizedTokenizer` is currently a skeleton for future optimization work.
+- Test harness uses pytest with CLI flags to select tokenizer, vocab size, and corpus path.
+
 ## Project layout
 
-- `bpe/base_tokenizer.py`: abstract tokenizer contract
-- `bpe/naive_tokenizer.py`: naive implementation (you fill in)
-- `bpe/optimized_tokenizer.py`: optimized implementation (you fill in)
-- `tests/test_tokenizer_contract.py`: shared tests for all implementations
-- `conftest.py`: pytest CLI options + tokenizer selection fixture
-- `data/`: place corpora/text files for experiments
+- `bpe/base_tokenizer.py`: abstract interface + shared types, constants, and helper functions.
+- `bpe/naive_tokenizer.py`: baseline BPE implementation.
+- `bpe/optimized_tokenizer.py`: optimized implementation skeleton.
+- `bpe/__init__.py`: public exports.
+- `tests/test_tokenizer_contract.py`: shared contract tests.
+- `conftest.py`: pytest CLI options and fixtures.
+- `data/`: corpus files for training experiments.
 
 ## Setup
 
@@ -20,13 +27,48 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
-## Run tests
+## Tokenizer interface
+
+Both tokenizers share the same constructor/API:
+
+```python
+tokenizer = NaiveTokenizer(
+    file_path="data/corpus.en",
+    vocab_size=500,
+    special_tokens={"<|endoftext|>": 500},
+)
+
+tokenizer.train()
+ids = tokenizer.encode("hello <|endoftext|> world")
+text = tokenizer.decode(ids)
+```
+
+### Notes
+
+- `special_tokens` is `dict[str, int] | None`, not a tuple/list.
+- `train()` uses the configured `vocab_size` from the constructor.
+- `encode()` / `decode()` expect the tokenizer to be trained first.
+
+## Shared helpers and constants
+
+From `bpe/base_tokenizer.py`:
+
+- `TokenId`, `TokenPair`, `WordCountDict`
+- `BYTE_VOCAB_SIZE`, `UTF8_ENCODING`, `ENCODE_WORD_CACHE_SIZE`
+- `GPT2_REGEX`
+- `apply_merge(...)`, `get_pair_counts(...)`, `split_by_special_tokens(...)`
+
+These are intended for reuse by both naive and optimized implementations.
+
+## Tests
+
+Run all tests:
 
 ```bash
 pytest -q
 ```
 
-You can select implementation(s) from CLI:
+Run by implementation:
 
 ```bash
 pytest -q --tokenizer naive
@@ -34,19 +76,17 @@ pytest -q --tokenizer optimized
 pytest -q --tokenizer all
 ```
 
-You can also choose vocabulary size and corpus path:
+Configure vocab size and corpus path:
 
 ```bash
 pytest -q --vocab-size 200
-pytest -q --corpus-path data/my_corpus.txt
-pytest -q --tokenizer optimized --vocab-size 500 --corpus-path data/wiki.txt
+pytest -q --corpus-path data/corpus.en
+pytest -q --tokenizer naive --vocab-size 500 --corpus-path data/the-verdict.txt
 ```
 
-And select a specific test by name:
+Run specific tests:
 
 ```bash
 pytest -q -k identity
-pytest -q -k special --tokenizer optimized
+pytest -q -k special --tokenizer naive
 ```
-
-By default, tests train each tokenizer once per test session and reuse that trained instance across tests for speed. If `--corpus-path` is not passed, pytest uses a tiny temporary corpus.

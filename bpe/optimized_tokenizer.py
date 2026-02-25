@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .base_tokenizer import BaseTokenizer
+from .base_tokenizer import BaseTokenizer, TokenId
 
 
 class OptimizedTokenizer(BaseTokenizer):
@@ -12,7 +12,7 @@ class OptimizedTokenizer(BaseTokenizer):
         self,
         file_path: str | Path,
         vocab_size: int,
-        special_tokens: tuple[str, ...] = (),
+        special_tokens: dict[str, TokenId] | None = None,
     ) -> None:
         super().__init__(
             file_path=file_path,
@@ -23,7 +23,7 @@ class OptimizedTokenizer(BaseTokenizer):
     def load_corpus(self) -> str:
         raise NotImplementedError
 
-    def train(self, num_merges: int) -> None:
+    def train(self) -> None:
         raise NotImplementedError
 
     def encode(self, text: str) -> list[int]:
