@@ -14,7 +14,7 @@ Minimal Python project for implementing and optimizing a Byte-Pair Encoding (BPE
 - `bpe/naive_tokenizer.py`: baseline BPE implementation.
 - `bpe/optimized_tokenizer.py`: optimized implementation skeleton.
 - `bpe/__init__.py`: public exports.
-- `tests/test_tokenizer_contract.py`: shared contract tests.
+- `tests/test_tokenizer.py`: tokenizer tests.
 - `conftest.py`: pytest CLI options and fixtures.
 - `data/`: corpus files for training experiments.
 

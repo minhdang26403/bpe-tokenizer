@@ -33,8 +33,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store",
         default=None,
         help=(
-            "Path to training corpus file. "
-            "If omitted, a tiny temporary corpus is used."
+            "Path to training corpus file. If omitted, a tiny temporary corpus is used."
         ),
     )
 
@@ -87,11 +86,10 @@ def trained_tokenizer(
     tokenizer = tokenizer_cls(
         file_path=corpus_file,
         vocab_size=vocab_size,
-        special_tokens=("<PAD>", "<UNK>", "<|endoftext|>"),
+        special_tokens={"<|endoftext|>": 50256},
     )
     try:
-        # Until train() exposes a richer test-time config, keep this deterministic.
-        tokenizer.train(num_merges=max(vocab_size - 1, 1))
+        tokenizer.train()
     except NotImplementedError as exc:
         pytest.skip(f"{tokenizer_cls.__name__} is not implemented yet: {exc}")
     return tokenizer
