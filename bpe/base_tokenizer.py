@@ -1,6 +1,9 @@
+"""Base BPE tokenizer with shared encoding/decoding and special-token handling."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from functools import lru_cache
 from pathlib import Path
 
 import regex  # type: ignore[import-untyped]
@@ -8,15 +11,15 @@ import regex  # type: ignore[import-untyped]
 TokenId = int
 TokenPair = tuple[TokenId, TokenId]
 WordCountDict = dict[tuple[TokenId, ...], int]
+
+
 BASE_VOCAB_SIZE = 256
 ENCODE_WORD_CACHE_SIZE = 32768
-
-GPT2_REGEX = regex.compile(
-    (
-        r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| "
-        r"?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
-    )
+# GPT-2 style regex: splits on Unicode letters, numbers, whitespace, contractions.
+GPT2_PATTERN = (
+    r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
 )
+GPT2_REGEX = regex.compile(GPT2_PATTERN)
 
 
 def apply_merge(
@@ -24,7 +27,11 @@ def apply_merge(
     best_pair: TokenPair,
     new_id: TokenId,
 ) -> list[TokenId]:
-    """Replace all adjacent `best_pair` occurrences in `ids` with `new_id`."""
+    """Replace all adjacent occurrences of best_pair in ids with new_id.
+
+    Walks through the id sequence once; whenever (ids[i], ids[i+1]) equals
+    best_pair, emits new_id and skips both; otherwise emits ids[i] and advances.
+    """
     new_ids = []
     i = 0
     while i < len(ids):
@@ -38,27 +45,8 @@ def apply_merge(
     return new_ids
 
 
-def get_pair_counts(word_count: WordCountDict) -> dict[TokenPair, int]:
-    """Count adjacent token-pair frequencies across weighted words."""
-    pair_counts: dict[TokenPair, int] = {}
-    for word_ids, count in word_count.items():
-        for pair in zip(word_ids, word_ids[1:]):
-            pair_counts[pair] = pair_counts.get(pair, 0) + count
-
-    return pair_counts
-
-
-def split_by_special_tokens(text: str, special_tokens: dict[str, TokenId]) -> list[str]:
-    """Split text while preserving special tokens as separate chunks."""
-    if not special_tokens:
-        return [text]
-
-    pattern = r"(" + "|".join(regex.escape(token) for token in special_tokens) + r")"
-    return regex.split(pattern, text)
-
-
 class BaseTokenizer(ABC):
-    """Abstract contract shared by all byte-pair encoding tokenizer implementations."""
+    """Base tokenizer shared by all byte-pair encoding tokenizer implementations."""
 
     def __init__(
         self,
@@ -69,39 +57,104 @@ class BaseTokenizer(ABC):
         """Store shared config and derived structures for special tokens."""
         self.file_path = Path(file_path)
         self.vocab_size = vocab_size
-        assert vocab_size >= BASE_VOCAB_SIZE
+        if vocab_size < BASE_VOCAB_SIZE:
+            raise ValueError(
+                f"vocab_size must be >= {BASE_VOCAB_SIZE}, got {vocab_size}"
+            )
 
-        self.merge_rules: dict[TokenPair, TokenId] = {}  # used in encode
-        self.vocab = {id: bytes([id]) for id in range(BASE_VOCAB_SIZE)}  # decode map
+        # Key data structures: merge rules for encoding, vocab for decoding.
+        self.merge_rules: dict[TokenPair, TokenId] = {}
+        self.vocab = {
+            id: bytes([id]) for id in range(BASE_VOCAB_SIZE)
+        }  # byte-level base vocab
 
         self.special_tokens = special_tokens if special_tokens else {}
+
+        # Inverse map: token_id -> bytes for decoding special tokens.
         self.inverse_special_tokens: dict[TokenId, bytes] = {}
-        for token, id in self.special_tokens.items():
-            assert id >= self.vocab_size
-            assert id not in self.inverse_special_tokens
-            self.inverse_special_tokens[id] = token.encode(encoding="utf-8")
+        for token, token_id in self.special_tokens.items():
+            if token_id < self.vocab_size:
+                raise ValueError(
+                    f"special token id {token_id} must be >= vocab_size "
+                    f"({self.vocab_size}); ids in [0, vocab_size) are reserved"
+                )
+            if token_id in self.inverse_special_tokens:
+                raise ValueError(f"duplicate special token id {token_id}")
+            self.inverse_special_tokens[token_id] = token.encode("utf-8")
 
-        self.is_trained = False
+        self.special_tokens_pattern = None
+        if self.special_tokens:
+            self.special_tokens_pattern = regex.compile(
+                r"("
+                + "|".join(regex.escape(token) for token in self.special_tokens)
+                + r")"
+            )
 
-    @abstractmethod
-    def load_corpus(self) -> str:
-        """Load training data from the configured file path."""
-        raise NotImplementedError
+    def split_by_special_tokens(self, text: str) -> list[str]:
+        """Split text into chunks, separating on special token boundaries."""
+        if not self.special_tokens_pattern:
+            return [text]
+
+        return self.special_tokens_pattern.split(text)
 
     @abstractmethod
     def train(self) -> None:
         """Train tokenizer to the configured vocabulary size."""
         raise NotImplementedError
 
-    @abstractmethod
-    def encode(self, text: str) -> list[int]:
-        """Convert text to token ids."""
-        raise NotImplementedError
+    @lru_cache(maxsize=ENCODE_WORD_CACHE_SIZE)
+    def encode_word(self, word: str) -> list[TokenId]:
+        """Encode a single pre-tokenized word using learned merge rules."""
+        ids = list(word.encode("utf-8"))  # Start with byte-level ids.
+        while len(ids) >= 2:
+            best_pair = min(
+                (pair for pair in zip(ids, ids[1:]) if pair in self.merge_rules),
+                key=lambda p: self.merge_rules[p],
+                default=None,
+            )
 
-    @abstractmethod
-    def decode(self, token_ids: list[int]) -> str:
-        """Convert token ids back to text."""
-        raise NotImplementedError
+            if not best_pair:
+                break
+
+            ids = apply_merge(ids, best_pair, self.merge_rules[best_pair])
+        return ids
+
+    def encode_chunk(self, chunk: str) -> list[TokenId]:
+        """Encode a chunk of text (no special tokens inside) into token ids."""
+        ids: list[TokenId] = []
+        words: list[str] = GPT2_REGEX.findall(chunk)
+        for word in words:
+            word_ids = self.encode_word(word)
+            ids.extend(word_ids)
+
+        return ids
+
+    def encode(self, text: str) -> list[TokenId]:
+        """Encode text into token ids, preserving explicit special tokens."""
+        chunks = self.split_by_special_tokens(text)
+        ids: list[TokenId] = []
+        for chunk in chunks:
+            if chunk in self.special_tokens:
+                ids.append(self.special_tokens[chunk])
+            else:
+                ids.extend(self.encode_chunk(chunk))
+
+        return ids
+
+    def decode(self, token_ids: list[TokenId]) -> str:
+        """Decode token ids back to a UTF-8 string."""
+        chunk_bytes: list[bytes] = []
+        for id in token_ids:
+            if id in self.vocab:
+                chunk_bytes.append(self.vocab[id])
+            elif id in self.inverse_special_tokens:
+                chunk_bytes.append(self.inverse_special_tokens[id])
+            else:
+                raise ValueError(f"invalid token id {id}")
+
+        text_bytes = b"".join(chunk_bytes)
+        text = text_bytes.decode("utf-8", errors="replace")
+        return text
 
     @abstractmethod
     def save(self, path: str | Path) -> None:

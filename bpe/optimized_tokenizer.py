@@ -7,52 +7,55 @@ from pathlib import Path
 import regex  # type: ignore[import-untyped]
 
 from .base_tokenizer import (
-    GPT2_REGEX,
+    GPT2_PATTERN,
     BaseTokenizer,
     TokenId,
     TokenPair,
     WordCountDict,
-    apply_merge,
-    split_by_special_tokens,
 )
 
-GPT_2_BYTE_REGEX = regex.compile(
-    rb"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
-)
+GPT2_BYTES_REGEX = regex.compile(GPT2_PATTERN.encode("utf-8"))
 
 WordList = list[list[TokenId]]
 WordCountList = list[int]
 
 
-def _pretokenizer_worker(
+def pretokenize_worker(
     args: tuple[Path, int, int, set[bytes]],
 ) -> WordCountDict:
+    """Pretokenize a file segment into word counts. Single tuple arg for Pool.map.
+
+    Pool.map passes one argument per call; we pack (path, start, end, special_tokens)
+    into a tuple for this reason.
+    """
     file_path, start, end, special_tokens = args
 
-    special_pattern = None
+    # Split on special tokens; capturing group makes separators appear in result.
+    split_pattern = None
     if special_tokens:
-        pattern_bytes = b"(" + b"|".join(regex.escape(t) for t in special_tokens) + b")"
-        special_pattern = regex.compile(pattern_bytes)
+        alternation = b"|".join(regex.escape(t) for t in special_tokens)
+        split_pattern = regex.compile(b"(" + alternation + b")")
 
     word_counts: WordCountDict = {}
     with open(file_path, "rb") as f:
         with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
             # This creates a copy. We can use memoryview to avoid one copy, but we need
             # ensure that its scope is inside the mmap object
-            segment = mm[start:end]
-            chunks = special_pattern.split(segment) if special_pattern else [segment]
+            segment = memoryview(mm)[start:end]
+            chunks = split_pattern.split(segment) if split_pattern else [segment]
             for chunk in chunks:
                 if chunk in special_tokens:
                     continue
-                words = GPT_2_BYTE_REGEX.findall(chunk)
+                words = GPT2_BYTES_REGEX.findall(chunk)
                 for word_bytes in words:
                     word_ids = tuple(word_bytes)
                     word_counts[word_ids] = word_counts.get(word_ids, 0) + 1
+            segment.release()
 
     return word_counts
 
 
-def _merge_word_counts(
+def merge_word_counts(
     word_counts_list: list[WordCountDict],
 ) -> tuple[WordList, WordCountList]:
 
@@ -73,20 +76,25 @@ def _merge_word_counts(
     return word_list, word_freq_list
 
 
-def _apply_merge_in_place(word: list[int], best_pair: TokenPair, new_id: TokenId):
-    id1, id2 = best_pair
+def apply_merge_in_place(
+    word_ids: list[TokenId], best_pair: TokenPair, new_id: TokenId
+):
     i = 0
     write_idx = 0
-    while i < len(word):
-        if i < len(word) - 1 and word[i] == id1 and word[i + 1] == id2:
-            word[write_idx] = new_id
+    while i < len(word_ids):
+        if (
+            i < len(word_ids) - 1
+            and word_ids[i] == best_pair[0]
+            and word_ids[i + 1] == best_pair[1]
+        ):
+            word_ids[write_idx] = new_id
             i += 2
         else:
-            word[write_idx] = word[i]
+            word_ids[write_idx] = word_ids[i]
             i += 1
         write_idx += 1
 
-    del word[write_idx:]
+    del word_ids[write_idx:]
 
 
 class OptimizedTokenizer(BaseTokenizer):
@@ -111,16 +119,23 @@ class OptimizedTokenizer(BaseTokenizer):
             token.encode("utf-8") for token in self.special_tokens
         }
 
-    def load_corpus(self) -> str:
-        raise NotImplementedError
+    def get_worker_segment_boundaries(
+        self, num_desired_chunks: int
+    ) -> list[int]:
+        """Find byte boundaries to split the file for parallel workers.
 
-    def _find_chunk_boundaries(self, num_desired_chunks) -> list[int]:
+        Splits at newlines and/or special token boundaries so we never cut
+        mid-line or mid-token. Uses newlines when present; adds special
+        tokens when configured so chunks stay balanced even when tokens are rare.
+        """
+        # Match newlines; if special tokens exist, also match them for more splits.
         if not self.encoded_special_tokens:
             pattern = regex.compile(b"\n")
         else:
-            pattern = regex.compile(
-                b"|".join(regex.escape(token) for token in self.encoded_special_tokens)
+            escaped = b"|".join(
+                regex.escape(t) for t in self.encoded_special_tokens
             )
+            pattern = regex.compile(b"\n|(?:" + escaped + b")")
 
         file_size = self.file_path.stat().st_size
         chunk_size = file_size // num_desired_chunks
@@ -149,7 +164,7 @@ class OptimizedTokenizer(BaseTokenizer):
         return boundaries
 
     def train(self) -> None:
-        boundaries = self._find_chunk_boundaries(self.num_workers)
+        boundaries = self.get_worker_segment_boundaries(self.num_workers)
 
         segments = [
             (self.file_path, start, end, self.encoded_special_tokens)
@@ -157,9 +172,9 @@ class OptimizedTokenizer(BaseTokenizer):
         ]
 
         with Pool(self.num_workers) as p:
-            word_counts_list = p.map(_pretokenizer_worker, segments)
+            word_counts_list = p.map(pretokenize_worker, segments)
 
-        word_list, word_freq_list = _merge_word_counts(word_counts_list)
+        word_list, word_freq_list = merge_word_counts(word_counts_list)
 
         num_merges = self.vocab_size - len(self.vocab)
         for _ in range(num_merges):
@@ -177,64 +192,7 @@ class OptimizedTokenizer(BaseTokenizer):
             self.merge_rules[best_pair] = new_id
 
             for word in word_list:
-                _apply_merge_in_place(word, best_pair, new_id)
-
-        self.is_trained = True
-
-    def _encode_word(self, word_bytes: bytes) -> list[TokenId]:
-        ids = list(word_bytes)
-        while len(ids) >= 2:
-            best_pair = min(
-                (pair for pair in zip(ids, ids[1:]) if pair in self.merge_rules),
-                key=lambda p: self.merge_rules[p],
-                default=None,
-            )
-
-            if not best_pair:
-                break
-
-            ids = apply_merge(ids, best_pair, self.merge_rules[best_pair])
-
-        return ids
-
-    def _encode_chunk(self, chunk: str) -> list[TokenId]:
-        ids = []
-        words: list[str] = GPT2_REGEX.findall(chunk)
-
-        for word in words:
-            word_bytes = word.encode("utf-8")
-            word_ids = self._encode_word(word_bytes)
-            ids.extend(word_ids)
-
-        return ids
-
-    def encode(self, text: str) -> list[TokenId]:
-        assert self.is_trained
-
-        chunks = split_by_special_tokens(text, self.special_tokens)
-
-        ids = []
-        for chunk in chunks:
-            if chunk in self.special_tokens:
-                ids.append(self.special_tokens[chunk])
-            else:
-                ids.extend(self._encode_chunk(chunk))
-
-        return ids
-
-    def decode(self, token_ids: list[TokenId]) -> str:
-        """Decode token ids back to a UTF-8 string."""
-        assert self.is_trained
-
-        try:
-            text_bytes = b"".join(
-                self.vocab[id] if id in self.vocab else self.inverse_special_tokens[id]
-                for id in token_ids
-            )
-        except KeyError as e:
-            raise ValueError(f"invalid token id: {e.args[0]}")
-
-        return text_bytes.decode(encoding="utf-8", errors="replace")
+                apply_merge_in_place(word, best_pair, new_id)
 
     def save(self, path: str | Path) -> None:
         raise NotImplementedError
