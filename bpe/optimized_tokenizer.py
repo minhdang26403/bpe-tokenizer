@@ -37,7 +37,9 @@ def _pretokenizer_worker(
     word_counts: WordCountDict = {}
     with open(file_path, "rb") as f:
         with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            segment = memoryview(mm)[start:end]
+            # This creates a copy. We can use memoryview to avoid one copy, but we need
+            # ensure that its scope is inside the mmap object
+            segment = mm[start:end]
             chunks = special_pattern.split(segment) if special_pattern else [segment]
             for chunk in chunks:
                 if chunk in special_tokens:
@@ -46,10 +48,6 @@ def _pretokenizer_worker(
                 for word_bytes in words:
                     word_ids = tuple(word_bytes)
                     word_counts[word_ids] = word_counts.get(word_ids, 0) + 1
-
-            # We need to explicitly release the segment since segment is still in the
-            # local scope while mmap object is destroyed
-            segment.release()
 
     return word_counts
 
@@ -79,8 +77,8 @@ def _apply_merge_in_place(word: list[int], best_pair: TokenPair, new_id: TokenId
     id1, id2 = best_pair
     i = 0
     write_idx = 0
-    while i < len(word) - 1:
-        if word[i] == id1 and word[i + 1] == id2:
+    while i < len(word):
+        if i < len(word) - 1 and word[i] == id1 and word[i + 1] == id2:
             word[write_idx] = new_id
             i += 2
         else:
@@ -233,8 +231,8 @@ class OptimizedTokenizer(BaseTokenizer):
                 self.vocab[id] if id in self.vocab else self.inverse_special_tokens[id]
                 for id in token_ids
             )
-        except KeyError:
-            raise ValueError(f"invalid token id: {id}")
+        except KeyError as e:
+            raise ValueError(f"invalid token id: {e.args[0]}")
 
         return text_bytes.decode(encoding="utf-8", errors="replace")
 
