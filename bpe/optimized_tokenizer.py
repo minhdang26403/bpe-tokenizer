@@ -23,6 +23,10 @@ GPT2_BYTES_REGEX = regex.compile(GPT2_PATTERN.encode("utf-8"))
 # Parallel: encoded_words[i] = word (list[TokenId]), word_freqs[i] = its count.
 EncodedWordList = list[list[TokenId]]
 WordFreqList = list[int]
+# pair_counts[pair] = total weighted occurrences of that pair in the corpus.
+PairCountDict = defaultdict[TokenPair, int]
+# pair_map[pair] = set of word indices where that pair appears at least once.
+PairMap = defaultdict[TokenPair, set[int]]
 
 
 def pretokenize_worker(
@@ -67,7 +71,12 @@ def pretokenize_worker(
 
 def merge_word_counts(
     per_segment_word_counts: list[WordCountDict],
-) -> tuple[EncodedWordList, WordFreqList]:
+) -> tuple[
+    EncodedWordList,
+    WordFreqList,
+    PairCountDict,
+    PairMap,
+]:
     """Merge word counts from multiple segments into parallel word list + freq list.
 
     Deduplicates words across segments and sums their counts. Returns two
@@ -77,8 +86,11 @@ def merge_word_counts(
         per_segment_word_counts: List of WordCountDict, one per worker segment.
 
     Returns:
-        (encoded_words, word_freqs) where encoded_words[i] is list[TokenId] and
-        word_freqs[i] is its total corpus frequency.
+        (encoded_words, word_freqs, pair_counts, pair_map) where:
+        - encoded_words[i] is list[TokenId] for unique word i.
+        - word_freqs[i] is the corpus frequency of encoded_words[i].
+        - pair_counts[pair] is weighted occurrence count of pair across corpus.
+        - pair_map[pair] is set of word indices that currently contain pair.
     """
     word_to_idx: dict[tuple[TokenId, ...], int] = {}
     encoded_words: EncodedWordList = []
@@ -94,7 +106,19 @@ def merge_word_counts(
                 idx = word_to_idx[word_ids]
                 word_freqs[idx] += count
 
-    return encoded_words, word_freqs
+    # Initial counts of all pairs in the training text.
+    pair_counts: PairCountDict = defaultdict(int)
+    # Inverted index: pair -> set of word indices that contain this pair.
+    pair_map: PairMap = defaultdict(set)
+
+    for i, (word, count) in enumerate(zip(encoded_words, word_freqs)):
+        for pair in zip(word, word[1:]):
+            # Count every occurrence of pair in this word, weighted by frequency.
+            pair_counts[pair] += count
+            # pair_map tracks membership only (whether word i contains pair).
+            pair_map[pair].add(i)
+
+    return encoded_words, word_freqs, pair_counts, pair_map
 
 
 def apply_merge_in_place(
@@ -215,6 +239,10 @@ class OptimizedTokenizer(BaseTokenizer):
         Splits corpus into segments, pretokenizes in parallel, merges counts,
         then iteratively applies BPE merges in place on the unified word list.
 
+        Maintains two synchronized structures for fast updates:
+        - pair_counts: weighted occurrence count of each pair.
+        - pair_map: word-index membership for each pair.
+
         Returns:
             None. Populates self.merge_rules and self.vocab; calls merge_vocab().
         """
@@ -227,25 +255,46 @@ class OptimizedTokenizer(BaseTokenizer):
         with Pool(self.num_workers) as p:
             per_segment_word_counts = p.map(pretokenize_worker, segments)
 
-        encoded_words, word_freqs = merge_word_counts(per_segment_word_counts)
+        encoded_words, word_freqs, pair_counts, pair_map = merge_word_counts(
+            per_segment_word_counts
+        )
 
         num_merges = self.vocab_size - len(self.vocab)
         for _ in range(num_merges):
-            pair_counts: defaultdict[TokenPair, int] = defaultdict(int)
-            for word_ids, count in zip(encoded_words, word_freqs):
-                for pair in zip(word_ids, word_ids[1:]):
-                    pair_counts[pair] += count
-
             if not pair_counts:
                 break
 
+            # Pick highest-frequency pair (deterministic tie-break by pair value).
             best_pair = max(pair_counts, key=lambda p: (pair_counts[p], p))
             new_id = len(self.vocab)
             self.vocab[new_id] = self.vocab[best_pair[0]] + self.vocab[best_pair[1]]
             self.merge_rules[best_pair] = new_id
 
-            for word_ids in encoded_words:
-                apply_merge_in_place(word_ids, best_pair, new_id)
+            # Only words containing best_pair can change after this merge.
+            affected_indices = tuple(pair_map[best_pair])
+
+            for idx in affected_indices:
+                word = encoded_words[idx]
+                freq = word_freqs[idx]
+
+                # Keep multiplicity: tuple(...) preserves repeated pairs in a word.
+                old_pairs = tuple(zip(word, word[1:]))
+                apply_merge_in_place(word, best_pair, new_id)
+                new_pairs = tuple(zip(word, word[1:]))
+
+                # Remove old weighted contributions for this word.
+                for pair in old_pairs:
+                    pair_counts[pair] -= freq
+                    pair_map[pair].discard(idx)
+                    if pair_counts[pair] == 0:
+                        # Drop empty entries to keep structures compact.
+                        del pair_counts[pair]
+                        pair_map.pop(pair)
+
+                # Add new weighted contributions for this word.
+                for pair in new_pairs:
+                    pair_counts[pair] += freq
+                    pair_map[pair].add(idx)
 
         self.merge_vocab()
 
