@@ -91,6 +91,8 @@ class NaiveTokenizer(BaseTokenizer):
 
             word_counts = new_word_counts
 
+        self.merge_vocab()
+
     def save(self, path: str | Path) -> None:
         """Persist tokenizer artifacts (not implemented yet)."""
         raise NotImplementedError
