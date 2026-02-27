@@ -105,7 +105,7 @@ class BaseTokenizer(ABC):
         if self.special_tokens:
             self.special_tokens_pattern = regex.compile(
                 r"("
-                + "|".join(regex.escape(token) for token in self.special_tokens)
+                + "|".join([regex.escape(token) for token in self.special_tokens])
                 + r")"
             )
 
