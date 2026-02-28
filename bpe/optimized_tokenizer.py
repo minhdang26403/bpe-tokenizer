@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import heapq
 import mmap
-from collections import defaultdict
+from collections import Counter, defaultdict
 from multiprocessing import Pool
 from pathlib import Path
+from typing import Mapping
 
 import regex  # type: ignore[import-untyped]
 
@@ -149,6 +151,32 @@ def apply_merge_in_place(
     del ids[write_idx:]
 
 
+def find_best_pair(
+    heap: list[tuple[int, TokenPair]],
+    pair_counts: Mapping[TokenPair, int],
+) -> TokenPair | None:
+    """Pop heap until finding a non-stale best pair.
+
+    The heap is lazily updated, so it may contain stale entries
+    (outdated frequency or pairs no longer present in pair_counts).
+
+    Args:
+        heap: Max-heap emulated with (-count, pair) entries.
+        pair_counts: Ground-truth pair frequencies.
+
+    Returns:
+        The best valid pair if found, otherwise None.
+    """
+    best_pair: TokenPair | None = None
+    while heap:
+        neg_freq, pair = heapq.heappop(heap)
+        if pair in pair_counts and pair_counts[pair] == -neg_freq:
+            best_pair = pair
+            break
+
+    return best_pair
+
+
 class OptimizedTokenizer(BaseTokenizer):
     """Optimized BPE tokenizer with parallel pretokenization and in-place merges."""
 
@@ -250,14 +278,25 @@ class OptimizedTokenizer(BaseTokenizer):
         encoded_words, word_freqs, pair_counts, pair_map = merge_word_counts(
             per_segment_word_counts
         )
+        heap = [(-count, pair) for pair, count in pair_counts.items()]
+        heapq.heapify(heap)
 
         num_merges = self.vocab_size - len(self.vocab)
         for _ in range(num_merges):
             if not pair_counts:
                 break
 
+            best_pair = find_best_pair(heap, pair_counts)
+            if best_pair is None:
+                raise RuntimeError(
+                    "Inconsistent heap state: pair_counts is non-empty but "
+                    "no valid heap entry was found. pair_counts is the ground truth "
+                    "and heap is lazily updated; this indicates missing/incorrect "
+                    f"heap pushes. pair_counts_size={len(pair_counts)}, "
+                    f"remaining_heap_entries={len(heap)}"
+                )
+
             # Pick highest-frequency pair (deterministic tie-break by pair value).
-            best_pair = max(pair_counts, key=lambda p: (pair_counts[p], p))
             new_id = len(self.vocab)
             self.vocab[new_id] = self.vocab[best_pair[0]] + self.vocab[best_pair[1]]
             self.merge_rules[best_pair] = new_id
@@ -269,24 +308,37 @@ class OptimizedTokenizer(BaseTokenizer):
                 word = encoded_words[idx]
                 freq = word_freqs[idx]
 
-                # Keep multiplicity: tuple(...) preserves repeated pairs in a word.
-                old_pairs = tuple(zip(word, word[1:]))
+                # Pair counts before the merge.
+                old_pair_counts = Counter(zip(word, word[1:]))
+                # Apply the merge in place.
                 apply_merge_in_place(word, best_pair, new_id)
-                new_pairs = tuple(zip(word, word[1:]))
+                # Pair counts after the merge.
+                new_pair_counts = Counter(zip(word, word[1:]))
 
-                # Remove old weighted contributions for this word.
-                for pair in old_pairs:
-                    pair_counts[pair] -= freq
-                    pair_map[pair].discard(idx)
-                    if pair_counts[pair] == 0:
-                        # Drop empty entries to keep structures compact.
+                # Get all pairs before and after the merge.
+                all_changed_pairs = old_pair_counts.keys() | new_pair_counts.keys()
+                for pair in all_changed_pairs:
+                    old_count, new_count = old_pair_counts[pair], new_pair_counts[pair]
+                    if old_count == new_count:
+                        continue
+
+                    if old_count == 0 and new_count > 0:
+                        # Pair is new.
+                        pair_map[pair].add(idx)
+                    elif old_count > 0 and new_count == 0:
+                        # Pair is gone.
+                        pair_map[pair].remove(idx)
+                    else:
+                        # Pair is still there, but count has changed.
+                        pass
+
+                    pair_counts[pair] += (new_count - old_count) * freq
+                    new_count = pair_counts[pair]
+                    if new_count > 0:
+                        heapq.heappush(heap, (-new_count, pair))
+                    else:
                         del pair_counts[pair]
                         pair_map.pop(pair)
-
-                # Add new weighted contributions for this word.
-                for pair in new_pairs:
-                    pair_counts[pair] += freq
-                    pair_map[pair].add(idx)
 
         self.merge_vocab()
 

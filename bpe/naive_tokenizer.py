@@ -113,8 +113,8 @@ class NaiveTokenizer(BaseTokenizer):
             if not pair_counts:
                 break
 
-            # Highest-frequency pair; tie-break by (count, pair) for determinism.
-            best_pair = max(pair_counts, key=lambda p: (pair_counts[p], p))
+            # Highest-frequency pair; ties prefer smaller token ids.
+            best_pair = max(pair_counts, key=lambda p: (pair_counts[p], -p[0], -p[1]))
             new_id = len(self.vocab)
             self.vocab[new_id] = self.vocab[best_pair[0]] + self.vocab[best_pair[1]]
             self.merge_rules[best_pair] = new_id
