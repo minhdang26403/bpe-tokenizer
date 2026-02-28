@@ -341,26 +341,3 @@ class OptimizedTokenizer(BaseTokenizer):
                         pair_map.pop(pair)
 
         self.merge_vocab()
-
-    def save(self, path: str | Path) -> None:
-        """Persist tokenizer artifacts to disk (not implemented).
-
-        Args:
-            path: File or directory path to write artifacts.
-
-        Returns:
-            None.
-        """
-        raise NotImplementedError
-
-    @classmethod
-    def load(cls, path: str | Path) -> OptimizedTokenizer:
-        """Load tokenizer from disk (not implemented).
-
-        Args:
-            path: File or directory path containing artifacts.
-
-        Returns:
-            OptimizedTokenizer instance.
-        """
-        raise NotImplementedError

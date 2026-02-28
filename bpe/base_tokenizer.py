@@ -274,28 +274,3 @@ class BaseTokenizer(ABC):
 
         text = text_bytes.decode("utf-8", errors="replace")
         return text
-
-    @abstractmethod
-    def save(self, path: str | Path) -> None:
-        """Persist tokenizer state to disk.
-
-        Args:
-            path: File or directory path to write tokenizer artifacts.
-
-        Returns:
-            None.
-        """
-        raise NotImplementedError
-
-    @classmethod
-    @abstractmethod
-    def load(cls, path: str | Path) -> BaseTokenizer:
-        """Load a saved tokenizer from disk.
-
-        Args:
-            path: File or directory path containing tokenizer artifacts.
-
-        Returns:
-            A tokenizer instance (subclass of BaseTokenizer) ready for encode/decode.
-        """
-        raise NotImplementedError

@@ -128,26 +128,3 @@ class NaiveTokenizer(BaseTokenizer):
             word_counts = new_word_counts
 
         self.merge_vocab()
-
-    def save(self, path: str | Path) -> None:
-        """Persist tokenizer artifacts to disk (not implemented).
-
-        Args:
-            path: File or directory path to write artifacts.
-
-        Returns:
-            None.
-        """
-        raise NotImplementedError
-
-    @classmethod
-    def load(cls, path: str | Path) -> NaiveTokenizer:
-        """Load tokenizer from disk (not implemented).
-
-        Args:
-            path: File or directory path containing artifacts.
-
-        Returns:
-            NaiveTokenizer instance.
-        """
-        raise NotImplementedError
