@@ -21,7 +21,9 @@ def get_tokenizer_class(name: str) -> Type[BaseTokenizer]:
         return TOKENIZER_REGISTRY[name]
     except KeyError as exc:
         allowed = ", ".join(sorted(TOKENIZER_REGISTRY))
-        raise ValueError(f"Unknown tokenizer '{name}'. Allowed values: {allowed}") from exc
+        raise ValueError(
+            f"Unknown tokenizer '{name}'. Allowed values: {allowed}"
+        ) from exc
 
 
 def create_tokenizer(
