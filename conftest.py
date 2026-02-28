@@ -21,7 +21,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--vocab-size",
         action="store",
         type=int,
-        default=256,
+        default=512,
         help="Vocabulary size passed to the tokenizer constructor.",
     )
     parser.addoption(
