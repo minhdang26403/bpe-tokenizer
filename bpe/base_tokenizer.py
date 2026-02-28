@@ -21,6 +21,46 @@ GPT2_PATTERN = (
 GPT2_REGEX = regex.compile(GPT2_PATTERN)
 
 
+def compile_special_tokens_pattern(
+    special_tokens: dict[str, TokenId],
+) -> regex.Pattern[str] | None:
+    """Compile a regex that captures special token boundaries.
+
+    Args:
+        special_tokens: Mapping from special token text to token id.
+
+    Returns:
+        A compiled regex that captures any special token, or None when no
+        special tokens are configured.
+    """
+    if not special_tokens:
+        return None
+
+    return regex.compile(
+        r"(" + "|".join([regex.escape(token) for token in special_tokens]) + r")"
+    )
+
+
+def split_text_by_special_tokens(
+    text: str,
+    special_tokens_pattern: regex.Pattern[str] | None,
+) -> list[str]:
+    """Split text into chunks around special token boundaries.
+
+    Args:
+        text: Input string that may contain special tokens.
+        special_tokens_pattern: Compiled pattern for special tokens.
+
+    Returns:
+        List of chunks (alternating text and matched special tokens). If no
+        pattern is provided, returns [text].
+    """
+    if not special_tokens_pattern:
+        return [text]
+
+    return special_tokens_pattern.split(text)
+
+
 def apply_merge(
     ids: list[TokenId] | tuple[TokenId, ...],
     best_pair: TokenPair,
@@ -101,32 +141,13 @@ class BaseTokenizer(ABC):
             self.inverse_special_tokens[token_id] = token.encode("utf-8")
 
         # Regex to split text on special token boundaries (capturing group).
-        self.special_tokens_pattern = None
-        if self.special_tokens:
-            self.special_tokens_pattern = regex.compile(
-                r"("
-                + "|".join([regex.escape(token) for token in self.special_tokens])
-                + r")"
-            )
+        self.special_tokens_pattern = compile_special_tokens_pattern(
+            self.special_tokens
+        )
 
         # FIFO cache for encode_word results; improves repeated encode calls.
         self.cache: dict[str, tuple[TokenId, ...]] = {}
         self.max_cache_size = 32768
-
-    def split_by_special_tokens(self, text: str) -> list[str]:
-        """Split text into chunks, separating on special token boundaries.
-
-        Args:
-            text: Input string that may contain special tokens.
-
-        Returns:
-            List of chunks (alternating text and special tokens). If no special
-            tokens are configured, returns [text] unchanged.
-        """
-        if not self.special_tokens_pattern:
-            return [text]
-
-        return self.special_tokens_pattern.split(text)
 
     def merge_vocab(self) -> None:
         """Build a unified vocab for fast decode lookup.
@@ -219,7 +240,10 @@ class BaseTokenizer(ABC):
         Returns:
             List of token ids for the full sequence.
         """
-        chunks = self.split_by_special_tokens(text)
+        chunks = split_text_by_special_tokens(
+            text,
+            self.special_tokens_pattern,
+        )
         ids: list[TokenId] = []
         for chunk in chunks:
             # Chunk is either a special token (emit id) or normal text (encode).

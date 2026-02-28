@@ -10,15 +10,14 @@ from pathlib import Path
 import regex  # type: ignore[import-untyped]
 
 from .base_tokenizer import (
-    GPT2_PATTERN,
+    GPT2_REGEX,
     BaseTokenizer,
     TokenId,
     TokenPair,
     WordCountDict,
+    compile_special_tokens_pattern,
+    split_text_by_special_tokens,
 )
-
-# Byte-level version of GPT2_REGEX for use with mmap/memoryview.
-GPT2_BYTES_REGEX = regex.compile(GPT2_PATTERN.encode("utf-8"))
 
 # Parallel: encoded_words[i] = word (list[TokenId]), word_freqs[i] = its count.
 EncodedWordList = list[list[TokenId]]
@@ -30,41 +29,39 @@ PairMap = defaultdict[TokenPair, set[int]]
 
 
 def pretokenize_worker(
-    args: tuple[Path, int, int, set[bytes]],
+    args: tuple[Path, int, int, dict[str, TokenId]],
 ) -> WordCountDict:
-    """Pretokenize a file segment into word counts. Single tuple arg for Pool.map.
+    """Pretokenize one mmap text segment into word counts.
 
-    Pool.map passes one argument per call; we pack (path, start, end, special_tokens)
-    into a tuple for this reason.
+    Pool.map passes one argument per call; we pack
+    (file_path, start, end, special_tokens) into a tuple for this reason.
 
     Args:
-        args: (file_path, start_byte, end_byte, special_tokens_bytes). The segment
-            to process is mmap[start:end].
+        args: (file_path, start_byte, end_byte, special_tokens).
 
     Returns:
-        WordCountDict mapping (word_ids,) to frequency in this segment.
+        WordCountDict mapping (word_ids,) to frequency within this segment.
     """
     file_path, start, end, special_tokens = args
-
-    # Split on special tokens; capturing group makes separators appear in result.
-    split_pattern = None
-    if special_tokens:
-        alternation = b"|".join([regex.escape(t) for t in special_tokens])
-        split_pattern = regex.compile(b"(" + alternation + b")")
+    special_tokens_pattern = compile_special_tokens_pattern(special_tokens)
 
     word_counts: defaultdict[tuple[TokenId, ...], int] = defaultdict(int)
     with open(file_path, "rb") as f:
         with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            segment = memoryview(mm)[start:end]
-            chunks = split_pattern.split(segment) if split_pattern else [segment]
-            for chunk in chunks:
-                if chunk in special_tokens:
-                    continue
-                words = GPT2_BYTES_REGEX.findall(chunk)
-                for word_bytes in words:
-                    word_ids = tuple(word_bytes)
-                    word_counts[word_ids] += 1
-            segment.release()
+            with memoryview(mm)[start:end] as segment:
+                # Decode only this segment; no full-file read.
+                segment_text = bytes(segment).decode("utf-8")
+                chunks = split_text_by_special_tokens(
+                    segment_text,
+                    special_tokens_pattern=special_tokens_pattern,
+                )
+                for chunk in chunks:
+                    if chunk in special_tokens:
+                        continue
+                    words: list[str] = GPT2_REGEX.findall(chunk)
+                    for word in words:
+                        word_ids = tuple(word.encode("utf-8"))
+                        word_counts[word_ids] += 1
 
     return word_counts
 
@@ -180,17 +177,12 @@ class OptimizedTokenizer(BaseTokenizer):
         )
 
         self.num_workers = num_workers
-        # Byte form for regex/mmap; avoids repeated encoding in workers.
-        self.encoded_special_tokens = {
-            token.encode("utf-8") for token in self.special_tokens
-        }
 
     def get_worker_segment_boundaries(self, num_desired_chunks: int) -> list[int]:
-        """Find byte boundaries to split the file for parallel workers.
+        """Find byte boundaries to split the corpus for parallel workers.
 
-        Splits at newlines and/or special token boundaries so we never cut
-        mid-line or mid-token. Uses newlines when present; adds special
-        tokens when configured so chunks stay balanced even when tokens are rare.
+        Splits at newlines and/or special-token boundaries to avoid cutting
+        special tokens across segment boundaries.
 
         Args:
             num_desired_chunks: Target number of segments (typically num_workers).
@@ -199,29 +191,29 @@ class OptimizedTokenizer(BaseTokenizer):
             List of byte offsets [b0, b1, ..., bn] where segments are
             (b0,b1), (b1,b2), ..., (b_{n-1}, bn). b0=0, bn=file_size.
         """
-        # Match newlines; if special tokens exist, also match them for more splits.
-        if not self.encoded_special_tokens:
-            pattern = regex.compile(b"\n")
+        # Match newlines; if special tokens exist, also match them.
+        if not self.special_tokens:
+            delimiter_pattern = regex.compile(b"\n")
         else:
-            escaped = b"|".join([regex.escape(t) for t in self.encoded_special_tokens])
-            pattern = regex.compile(b"\n|(?:" + escaped + b")")
+            escaped = b"|".join(
+                [regex.escape(t.encode("utf-8")) for t in self.special_tokens]
+            )
+            delimiter_pattern = regex.compile(b"\n|(?:" + escaped + b")")
 
         file_size = self.file_path.stat().st_size
         chunk_size = file_size // num_desired_chunks
         boundaries: list[int] = [0]
 
         with open(self.file_path, "rb") as f:
-            # Create a read-only memory map of the entire file
             with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
                 for i in range(1, num_desired_chunks):
                     target = i * chunk_size
 
-                    # Check if the previous search already jumped past this target
+                    # Check if the previous search already jumped past this target.
                     if target <= boundaries[-1]:
                         continue
 
-                    # The search handles all the "buffer" and "straddle" logic for us!
-                    match = pattern.search(mm, target)
+                    match = delimiter_pattern.search(mm, target)
                     if match:
                         boundaries.append(match.end())
                     else:
@@ -248,7 +240,7 @@ class OptimizedTokenizer(BaseTokenizer):
         """
         boundaries = self.get_worker_segment_boundaries(self.num_workers)
         segments = [
-            (self.file_path, start, end, self.encoded_special_tokens)
+            (self.file_path, start, end, self.special_tokens)
             for start, end in zip(boundaries, boundaries[1:])
         ]
 

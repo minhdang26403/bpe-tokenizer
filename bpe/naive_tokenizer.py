@@ -12,6 +12,7 @@ from .base_tokenizer import (
     TokenPair,
     WordCountDict,
     apply_merge,
+    split_text_by_special_tokens,
 )
 
 
@@ -77,7 +78,10 @@ class NaiveTokenizer(BaseTokenizer):
             Dict mapping (word_ids,) to corpus frequency count.
         """
         text = self.file_path.read_text(encoding="utf-8")
-        chunks = self.split_by_special_tokens(text)
+        chunks = split_text_by_special_tokens(
+            text,
+            self.special_tokens_pattern,
+        )
         word_counts: defaultdict[tuple[TokenId, ...], int] = defaultdict(int)
 
         for chunk in chunks:
